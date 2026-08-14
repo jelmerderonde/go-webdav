@@ -809,3 +809,72 @@ func TestNewPreconditionError(t *testing.T) {
 		})
 	}
 }
+
+// deleteTestBackend records the calendar objects a DELETE reached.
+type deleteTestBackend struct {
+	testBackend
+
+	deleted []string
+}
+
+func (b *deleteTestBackend) DeleteCalendarObject(ctx context.Context, path string) error {
+	b.deleted = append(b.deleted, path)
+	return nil
+}
+
+// conditionalDeleteTestBackend also implements ConditionalDeleteBackend.
+type conditionalDeleteTestBackend struct {
+	deleteTestBackend
+
+	opts *DeleteCalendarObjectOptions
+}
+
+func (b *conditionalDeleteTestBackend) DeleteCalendarObjectConditional(ctx context.Context, path string, opts *DeleteCalendarObjectOptions) error {
+	b.opts = opts
+	return b.DeleteCalendarObject(ctx, path)
+}
+
+func TestDeleteCalendarObject(t *testing.T) {
+	objectPath := "/user/calendars/cal/test.ics"
+
+	plain := &deleteTestBackend{}
+	conditional := &conditionalDeleteTestBackend{}
+
+	for _, tc := range []struct {
+		name    string
+		backend Backend
+	}{
+		{"plain", plain},
+		{"conditional", conditional},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodDelete, objectPath, nil)
+			req.Header.Set("If-Match", `"etag-1"`)
+			w := httptest.NewRecorder()
+			handler := Handler{Backend: tc.backend}
+			handler.ServeHTTP(w, req)
+
+			res := w.Result()
+			defer res.Body.Close()
+			if res.StatusCode != http.StatusNoContent {
+				t.Errorf("got status %v, want 204", res.StatusCode)
+			}
+		})
+	}
+
+	if !reflect.DeepEqual(plain.deleted, []string{objectPath}) {
+		t.Errorf("plain backend deleted %v, want [%v]", plain.deleted, objectPath)
+	}
+	if !reflect.DeepEqual(conditional.deleted, []string{objectPath}) {
+		t.Errorf("conditional backend deleted %v, want [%v]", conditional.deleted, objectPath)
+	}
+	if conditional.opts == nil {
+		t.Fatalf("conditional backend didn't get any options")
+	}
+	if conditional.opts.IfMatch != `"etag-1"` {
+		t.Errorf("got If-Match %q, want %q", conditional.opts.IfMatch, `"etag-1"`)
+	}
+	if conditional.opts.IfNoneMatch.IsSet() {
+		t.Errorf("got unexpected If-None-Match %q", conditional.opts.IfNoneMatch)
+	}
+}
