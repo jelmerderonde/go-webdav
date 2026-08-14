@@ -3,6 +3,7 @@ package caldav
 import (
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -754,6 +755,56 @@ func TestSyncCollectionAccepted(t *testing.T) {
 			}
 			if _, code := findProp(t, &ms.Responses[0], calendarDataName); code != http.StatusOK {
 				t.Errorf("calendar-data has status %v, want 200", code)
+			}
+		})
+	}
+}
+
+func TestNewPreconditionError(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		err      error
+		wantCode int
+		wantBody string
+	}{
+		{
+			name:     "without details",
+			err:      NewPreconditionError(PreconditionNoUIDConflict),
+			wantCode: 409,
+			wantBody: `<error xmlns="DAV:"><no-uid-conflict xmlns="urn:ietf:params:xml:ns:caldav"></no-uid-conflict></error>`,
+		},
+		{
+			name:     "empty description",
+			err:      NewPreconditionErrorWithDetails(409, PreconditionNoUIDConflict, ""),
+			wantCode: 409,
+			wantBody: `<error xmlns="DAV:"><no-uid-conflict xmlns="urn:ietf:params:xml:ns:caldav"></no-uid-conflict></error>`,
+		},
+		{
+			name:     "with details",
+			err:      NewPreconditionErrorWithDetails(http.StatusForbidden, PreconditionValidCalendarData, "unsupported event"),
+			wantCode: http.StatusForbidden,
+			wantBody: `<error xmlns="DAV:"><valid-calendar-data xmlns="urn:ietf:params:xml:ns:caldav"></valid-calendar-data><responsedescription xmlns="DAV:">unsupported event</responsedescription></error>`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var httpErr *internal.HTTPError
+			if !errors.As(tc.err, &httpErr) {
+				t.Fatalf("got %T, want an *internal.HTTPError", tc.err)
+			}
+			if httpErr.Code != tc.wantCode {
+				t.Errorf("got status %v, want %v", httpErr.Code, tc.wantCode)
+			}
+
+			var errElt *internal.Error
+			if !errors.As(tc.err, &errElt) {
+				t.Fatalf("error doesn't carry a DAV:error element")
+			}
+			b, err := xml.Marshal(errElt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(b) != tc.wantBody {
+				t.Errorf("got body:\n%s\nwant:\n%s", b, tc.wantBody)
 			}
 		})
 	}

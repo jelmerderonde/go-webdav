@@ -855,12 +855,26 @@ const (
 )
 
 func NewPreconditionError(err PreconditionType) error {
+	return NewPreconditionErrorWithDetails(409, err, "")
+}
+
+// NewPreconditionErrorWithDetails returns a precondition error with the
+// provided HTTP status code. If description isn't empty, it's included in the
+// DAV:error element as a DAV:responsedescription for the user to read.
+func NewPreconditionErrorWithDetails(status int, err PreconditionType, description string) error {
 	name := xml.Name{Space: "urn:ietf:params:xml:ns:caldav", Local: string(err)}
-	elem := internal.NewRawXMLElement(name, nil, nil)
+	raw := []internal.RawXMLValue{*internal.NewRawXMLElement(name, nil, nil)}
+	if description != "" {
+		desc, e := internal.EncodeRawXMLElement(&responseDescription{Text: description})
+		if e != nil {
+			return e
+		}
+		raw = append(raw, *desc)
+	}
 	return &internal.HTTPError{
-		Code: 409,
+		Code: status,
 		Err: &internal.Error{
-			Raw: []internal.RawXMLValue{*elem},
+			Raw: raw,
 		},
 	}
 }

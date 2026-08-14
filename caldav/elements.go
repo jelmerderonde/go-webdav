@@ -77,6 +77,12 @@ type getCTag struct {
 	CTag    string   `xml:",chardata"`
 }
 
+// https://tools.ietf.org/html/rfc4918#section-14.25
+type responseDescription struct {
+	XMLName xml.Name `xml:"DAV: responsedescription"`
+	Text    string   `xml:",chardata"`
+}
+
 // https://tools.ietf.org/html/rfc6578#section-6.2
 type syncTokenProp struct {
 	XMLName xml.Name `xml:"DAV: sync-token"`
