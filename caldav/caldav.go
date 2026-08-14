@@ -4,6 +4,8 @@
 package caldav
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -147,4 +149,36 @@ type SyncResponse struct {
 	SyncToken string
 	Updated   []CalendarObject
 	Deleted   []string
+}
+
+// ErrInvalidSyncToken is returned by SyncBackend.SyncCalendar when the sync
+// token supplied by the client is not valid, e.g. because it is malformed or
+// too old. The server replies with a DAV:valid-sync-token error, which makes
+// the client start a new synchronization from scratch.
+var ErrInvalidSyncToken = errors.New("caldav: invalid sync token")
+
+// SyncBackend is an optional interface a Backend can implement to support
+// collection synchronization as defined in RFC 6578.
+//
+// Paths are the same calendar collection paths the rest of Backend sees.
+type SyncBackend interface {
+	// CalendarCTag returns the calendar's current ctag, exposed as the
+	// calendarserver.org getctag property. It changes whenever the contents
+	// of the calendar change.
+	CalendarCTag(ctx context.Context, path string) (string, error)
+
+	// CalendarSyncToken returns the calendar's current sync token, exposed as
+	// the DAV:sync-token property, without computing a delta.
+	CalendarSyncToken(ctx context.Context, path string) (string, error)
+
+	// SyncCalendar answers a sync-collection REPORT. syncToken is the token
+	// sent by the client verbatim, an empty string means initial
+	// synchronization. A token the backend doesn't recognize is reported by
+	// returning an error wrapping ErrInvalidSyncToken.
+	//
+	// On success SyncResponse.SyncToken must be set to the calendar's current
+	// sync token. Each SyncResponse.Updated entry must carry a Path, an ETag
+	// and non-nil Data. SyncResponse.Deleted contains the full paths of the
+	// removed calendar objects.
+	SyncCalendar(ctx context.Context, path, syncToken string) (*SyncResponse, error)
 }
