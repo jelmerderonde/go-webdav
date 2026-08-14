@@ -1,6 +1,7 @@
 package caldav
 
 import (
+	"bytes"
 	"context"
 	"encoding/xml"
 	"errors"
@@ -421,8 +422,8 @@ func (t testBackend) GetCalendarObject(ctx context.Context, path string, req *Ca
 	return nil, fmt.Errorf("Couldn't find calendar object at: %s", path)
 }
 
-func (t testBackend) PutCalendarObject(ctx context.Context, path string, calendar *ical.Calendar, opts *PutCalendarObjectOptions) (*CalendarObject, error) {
-	return nil, nil
+func (t testBackend) PutCalendarObject(ctx context.Context, path string, calendar *ical.Calendar, opts *PutCalendarObjectOptions) (*CalendarObject, bool, error) {
+	return nil, false, nil
 }
 
 func (t testBackend) ListCalendarObjects(ctx context.Context, path string, req *CalendarCompRequest) ([]CalendarObject, error) {
@@ -876,5 +877,54 @@ func TestDeleteCalendarObject(t *testing.T) {
 	}
 	if conditional.opts.IfNoneMatch.IsSet() {
 		t.Errorf("got unexpected If-None-Match %q", conditional.opts.IfNoneMatch)
+	}
+}
+
+// putTestBackend reports back whether the stored object was created.
+type putTestBackend struct {
+	testBackend
+
+	created bool
+}
+
+func (b *putTestBackend) PutCalendarObject(ctx context.Context, path string, calendar *ical.Calendar, opts *PutCalendarObjectOptions) (*CalendarObject, bool, error) {
+	return &CalendarObject{Path: path, ETag: "etag-1"}, b.created, nil
+}
+
+func TestPutCalendarObject(t *testing.T) {
+	object := newSyncTestObject("/user/calendars/cal/test.ics", "This is an event")
+
+	var buf bytes.Buffer
+	if err := ical.NewEncoder(&buf).Encode(object.Data); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		created  bool
+		wantCode int
+	}{
+		{true, http.StatusCreated},
+		{false, http.StatusNoContent},
+	} {
+		t.Run(fmt.Sprintf("created=%v", tc.created), func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPut, object.Path, bytes.NewReader(buf.Bytes()))
+			req.Header.Set("Content-Type", ical.MIMEType)
+			w := httptest.NewRecorder()
+			handler := Handler{Backend: &putTestBackend{created: tc.created}}
+			handler.ServeHTTP(w, req)
+
+			res := w.Result()
+			defer res.Body.Close()
+			data, err := io.ReadAll(res.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.StatusCode != tc.wantCode {
+				t.Errorf("got status %v, want %v:\n%s", res.StatusCode, tc.wantCode, data)
+			}
+			if got := res.Header.Get("ETag"); got != `"etag-1"` {
+				t.Errorf("got ETag %q", got)
+			}
+		})
 	}
 }

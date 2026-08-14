@@ -57,7 +57,7 @@ type Backend interface {
 	GetCalendarObject(ctx context.Context, path string, req *CalendarCompRequest) (*CalendarObject, error)
 	ListCalendarObjects(ctx context.Context, path string, req *CalendarCompRequest) ([]CalendarObject, error)
 	QueryCalendarObjects(ctx context.Context, path string, query *CalendarQuery) ([]CalendarObject, error)
-	PutCalendarObject(ctx context.Context, path string, calendar *ical.Calendar, opts *PutCalendarObjectOptions) (*CalendarObject, error)
+	PutCalendarObject(ctx context.Context, path string, calendar *ical.Calendar, opts *PutCalendarObjectOptions) (co *CalendarObject, created bool, err error)
 	DeleteCalendarObject(ctx context.Context, path string) error
 
 	webdav.UserPrincipalBackend
@@ -797,7 +797,7 @@ func (b *backend) Put(w http.ResponseWriter, r *http.Request) error {
 		return internal.HTTPErrorf(http.StatusBadRequest, "caldav: failed to parse iCalendar: %v", err)
 	}
 
-	co, err := b.Backend.PutCalendarObject(r.Context(), r.URL.Path, cal, &opts)
+	co, created, err := b.Backend.PutCalendarObject(r.Context(), r.URL.Path, cal, &opts)
 	if err != nil {
 		return err
 	}
@@ -812,8 +812,11 @@ func (b *backend) Put(w http.ResponseWriter, r *http.Request) error {
 		w.Header().Set("Location", co.Path)
 	}
 
-	// TODO: http.StatusNoContent if the resource already existed
-	w.WriteHeader(http.StatusCreated)
+	if created {
+		w.WriteHeader(http.StatusCreated)
+	} else {
+		w.WriteHeader(http.StatusNoContent)
+	}
 
 	return nil
 }
