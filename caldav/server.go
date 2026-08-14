@@ -549,6 +549,29 @@ func (b *backend) propFindCalendar(ctx context.Context, propfind *internal.PropF
 		internal.CurrentUserPrivilegeSetName: internal.PropFindValue(internal.NewCurrentUserPrivilegeSet(cal.ReadOnly)),
 	}
 
+	reports := []xml.Name{calendarQueryName, calendarMultigetName}
+	if sb, ok := b.Backend.(SyncBackend); ok {
+		reports = append(reports, syncCollectionName)
+
+		// The ctag and the sync token change whenever the calendar changes, so
+		// they can't be cached across requests.
+		props[getCTagName] = func(*internal.RawXMLValue) (interface{}, error) {
+			ctag, err := sb.CalendarCTag(ctx, cal.Path)
+			if err != nil {
+				return nil, err
+			}
+			return &getCTag{CTag: ctag}, nil
+		}
+		props[syncTokenName] = func(*internal.RawXMLValue) (interface{}, error) {
+			token, err := sb.CalendarSyncToken(ctx, cal.Path)
+			if err != nil {
+				return nil, err
+			}
+			return &syncTokenProp{Token: token}, nil
+		}
+	}
+	props[supportedReportSetName] = internal.PropFindValue(newSupportedReportSet(reports...))
+
 	if cal.Name != "" {
 		props[internal.DisplayNameName] = internal.PropFindValue(&internal.DisplayName{
 			Name: cal.Name,

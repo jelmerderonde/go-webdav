@@ -10,8 +10,17 @@ import (
 
 const namespace = "urn:ietf:params:xml:ns:caldav"
 
+// Namespace of the calendarserver.org extensions, see
+// https://github.com/apple/ccs-calendarserver/tree/master/doc/Extensions
+const calendarServerNamespace = "http://calendarserver.org/ns/"
+
 var (
 	calendarHomeSetName = xml.Name{namespace, "calendar-home-set"}
+
+	getCTagName            = xml.Name{calendarServerNamespace, "getctag"}
+	syncTokenName          = xml.Name{internal.Namespace, "sync-token"}
+	supportedReportSetName = xml.Name{internal.Namespace, "supported-report-set"}
+	syncCollectionName     = xml.Name{internal.Namespace, "sync-collection"}
 
 	calendarDescriptionName           = xml.Name{namespace, "calendar-description"}
 	supportedCalendarDataName         = xml.Name{namespace, "supported-calendar-data"}
@@ -58,6 +67,46 @@ type calendarDataType struct {
 	XMLName     xml.Name `xml:"urn:ietf:params:xml:ns:caldav calendar-data"`
 	ContentType string   `xml:"content-type,attr"`
 	Version     string   `xml:"version,attr"`
+}
+
+// https://github.com/apple/ccs-calendarserver/blob/master/doc/Extensions/caldav-ctag.txt
+type getCTag struct {
+	XMLName xml.Name `xml:"http://calendarserver.org/ns/ getctag"`
+	CTag    string   `xml:",chardata"`
+}
+
+// https://tools.ietf.org/html/rfc6578#section-6.2
+type syncTokenProp struct {
+	XMLName xml.Name `xml:"DAV: sync-token"`
+	Token   string   `xml:",chardata"`
+}
+
+// https://tools.ietf.org/html/rfc3253#section-3.1.5
+type supportedReportSet struct {
+	XMLName          xml.Name          `xml:"DAV: supported-report-set"`
+	SupportedReports []supportedReport `xml:"supported-report"`
+}
+
+type supportedReport struct {
+	XMLName xml.Name   `xml:"DAV: supported-report"`
+	Report  reportElem `xml:"report"`
+}
+
+type reportElem struct {
+	XMLName xml.Name               `xml:"DAV: report"`
+	Value   []internal.RawXMLValue `xml:",any"`
+}
+
+func newSupportedReportSet(names ...xml.Name) *supportedReportSet {
+	var reports []supportedReport
+	for _, name := range names {
+		reports = append(reports, supportedReport{
+			Report: reportElem{
+				Value: []internal.RawXMLValue{*internal.NewRawXMLElement(name, nil, nil)},
+			},
+		})
+	}
+	return &supportedReportSet{SupportedReports: reports}
 }
 
 // https://tools.ietf.org/html/rfc4791#section-5.2.5
