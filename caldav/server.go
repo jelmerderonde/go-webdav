@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"mime"
 	"net/http"
@@ -97,8 +98,10 @@ func (h *Handler) handleReport(w http.ResponseWriter, r *http.Request) error {
 		return h.handleQuery(r, w, report.Query)
 	} else if report.Multiget != nil {
 		return h.handleMultiget(r.Context(), w, report.Multiget)
+	} else if report.SyncCollection != nil {
+		return h.handleSyncCollection(r, w, report.SyncCollection)
 	}
-	return internal.HTTPErrorf(http.StatusBadRequest, "caldav: expected calendar-query or calendar-multiget element in REPORT request")
+	return internal.HTTPErrorf(http.StatusBadRequest, "caldav: expected calendar-query, calendar-multiget or sync-collection element in REPORT request")
 }
 
 func decodeParamFilter(el *paramFilter) (*ParamFilter, error) {
@@ -284,6 +287,75 @@ func (h *Handler) handleMultiget(ctx context.Context, w http.ResponseWriter, mul
 	}
 
 	ms := internal.NewMultiStatus(resps...)
+	return internal.ServeMultiStatus(w, ms)
+}
+
+// https://tools.ietf.org/html/rfc6578#section-3
+func (h *Handler) handleSyncCollection(r *http.Request, w http.ResponseWriter, query *internal.SyncCollectionQuery) error {
+	sb, ok := h.Backend.(SyncBackend)
+	if !ok {
+		return &internal.HTTPError{
+			Code: http.StatusForbidden,
+			Err: &internal.Error{
+				Raw: []internal.RawXMLValue{*internal.NewRawXMLElement(supportedReportName, nil, nil)},
+			},
+		}
+	}
+
+	// A calendar collection is flat: calendar objects are direct members and
+	// there are no child collections, so all sync levels select the same set
+	// of resources. "infinity" is what this package's own client sends.
+	switch query.SyncLevel {
+	case "", "1", "infinite", "infinity":
+	default:
+		return internal.HTTPErrorf(http.StatusBadRequest, "caldav: unsupported sync-level %q", query.SyncLevel)
+	}
+
+	// TODO: honor DAV:limit, results are always complete
+
+	changes, err := sb.SyncCalendar(r.Context(), r.URL.Path, query.SyncToken)
+	if err != nil {
+		if errors.Is(err, ErrInvalidSyncToken) {
+			return &internal.HTTPError{
+				Code: http.StatusForbidden,
+				Err: &internal.Error{
+					Raw: []internal.RawXMLValue{*internal.NewRawXMLElement(validSyncTokenName, nil, nil)},
+				},
+			}
+		}
+		return err
+	}
+
+	// DAV:prop is mandatory in a sync-collection request, fall back to the
+	// ETags alone if the client left it out.
+	propfind := internal.PropFind{Prop: query.Prop}
+	if query.Prop == nil {
+		propfind = *internal.NewPropNamePropFind(internal.GetETagName)
+	}
+
+	b := backend{
+		Backend: h.Backend,
+		Prefix:  strings.TrimSuffix(h.Prefix, "/"),
+	}
+
+	var resps []internal.Response
+	for _, co := range changes.Updated {
+		resp, err := b.propFindCalendarObject(r.Context(), &propfind, &co)
+		if err != nil {
+			return err
+		}
+		resps = append(resps, *resp)
+	}
+	for _, href := range changes.Deleted {
+		// Removed members are reported with a status and no propstat
+		resps = append(resps, internal.Response{
+			Hrefs:  []internal.Href{{Path: href}},
+			Status: &internal.Status{Code: http.StatusNotFound},
+		})
+	}
+
+	ms := internal.NewMultiStatus(resps...)
+	ms.SyncToken = changes.SyncToken
 	return internal.ServeMultiStatus(w, ms)
 }
 

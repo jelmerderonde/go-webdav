@@ -199,9 +199,9 @@ var propFindAllProp = `
 </A:propfind>
 `
 
-// serveDAV runs a single request against a handler backed by b and returns the
-// parsed multistatus response.
-func serveDAV(t *testing.T, b Backend, method, path, body string) *internal.MultiStatus {
+// serveRaw runs a single request against a handler backed by b and returns the
+// response along with its body.
+func serveRaw(t *testing.T, b Backend, method, path, body string) (*http.Response, []byte) {
 	t.Helper()
 
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
@@ -217,6 +217,15 @@ func serveDAV(t *testing.T, b Backend, method, path, body string) *internal.Mult
 	if err != nil {
 		t.Fatal(err)
 	}
+	return res, data
+}
+
+// serveDAV runs a single request against a handler backed by b and returns the
+// parsed multistatus response.
+func serveDAV(t *testing.T, b Backend, method, path, body string) *internal.MultiStatus {
+	t.Helper()
+
+	res, data := serveRaw(t, b, method, path, body)
 	if res.StatusCode != http.StatusMultiStatus {
 		t.Fatalf("%v %v: got status %v, want 207:\n%s", method, path, res.StatusCode, data)
 	}
@@ -449,4 +458,303 @@ func (b *syncTestBackend) SyncCalendar(ctx context.Context, path, syncToken stri
 		return nil, b.syncErr
 	}
 	return b.sync, nil
+}
+
+var reportSyncCollection = `
+<?xml version="1.0" encoding="UTF-8"?>
+<A:sync-collection xmlns:A="DAV:">
+  <A:sync-token>%s</A:sync-token>
+  <A:sync-level>%s</A:sync-level>
+  <A:prop>
+    <A:getetag/>
+  </A:prop>
+</A:sync-collection>
+`
+
+// The shape Calendar.app sends, with a limit and inline calendar-data.
+var reportSyncCollectionApple = `<?xml version="1.0" encoding="UTF-8"?>
+<A:sync-collection xmlns:A="DAV:">
+  <A:sync-token>http://example.com/ns/sync/42</A:sync-token>
+  <A:sync-level>1</A:sync-level>
+  <A:limit>
+    <A:nresults>100</A:nresults>
+  </A:limit>
+  <A:prop>
+    <A:getetag/>
+    <B:calendar-data xmlns:B="urn:ietf:params:xml:ns:caldav"/>
+  </A:prop>
+</A:sync-collection>
+`
+
+func TestUnmarshalSyncCollectionReport(t *testing.T) {
+	var report reportReq
+	if err := xml.Unmarshal([]byte(reportSyncCollectionApple), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.SyncCollection == nil {
+		t.Fatalf("sync-collection element not decoded: %+v", report)
+	}
+	q := report.SyncCollection
+	if q.SyncToken != "http://example.com/ns/sync/42" {
+		t.Errorf("got sync-token %q", q.SyncToken)
+	}
+	if q.SyncLevel != "1" {
+		t.Errorf("got sync-level %q", q.SyncLevel)
+	}
+	if q.Limit == nil || q.Limit.NResults != 100 {
+		t.Errorf("got limit %+v", q.Limit)
+	}
+	if q.Prop == nil || q.Prop.Get(internal.GetETagName) == nil || q.Prop.Get(calendarDataName) == nil {
+		t.Errorf("got prop %+v", q.Prop)
+	}
+}
+
+// newSyncTestObject returns a calendar object suitable for a sync response.
+func newSyncTestObject(path, summary string) CalendarObject {
+	event := ical.NewEvent()
+	event.Props.SetText(ical.PropUID, "46bbf47a-1861-41a3-ae06-8d8268c6d41e")
+	event.Props.SetDateTime(ical.PropDateTimeStamp, time.Now())
+	event.Props.SetText(ical.PropSummary, summary)
+	cal := ical.NewCalendar()
+	cal.Props.SetText(ical.PropVersion, "2.0")
+	cal.Props.SetText(ical.PropProductID, "-//xyz Corp//NONSGML PDA Calendar Version 1.0//EN")
+	cal.Children = []*ical.Component{event.Component}
+
+	return CalendarObject{Path: path, ETag: "etag-1", Data: cal}
+}
+
+// TestSyncCollectionRoundTrip drives the server with this package's own client.
+func TestSyncCollectionRoundTrip(t *testing.T) {
+	calendar := Calendar{Path: "/user/calendars/cal"}
+	object := newSyncTestObject(calendar.Path+"/new.ics", "This is an event")
+	deleted := calendar.Path + "/gone.ics"
+
+	b := &syncTestBackend{
+		testBackend: testBackend{calendars: []Calendar{calendar}},
+		sync: &SyncResponse{
+			SyncToken: "43",
+			Updated:   []CalendarObject{object},
+			Deleted:   []string{deleted},
+		},
+	}
+
+	srv := httptest.NewServer(&Handler{Backend: b})
+	defer srv.Close()
+
+	c, err := NewClient(nil, srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := c.SyncCollection(context.Background(), calendar.Path, &SyncQuery{
+		SyncToken:   "42",
+		CompRequest: CalendarCompRequest{AllProps: true, AllComps: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !reflect.DeepEqual(b.syncCalls, []string{"42"}) {
+		t.Errorf("backend got sync tokens %v, want [42]", b.syncCalls)
+	}
+	if resp.SyncToken != "43" {
+		t.Errorf("got sync-token %q, want 43", resp.SyncToken)
+	}
+	if !reflect.DeepEqual(resp.Deleted, []string{deleted}) {
+		t.Errorf("got deleted %v, want [%v]", resp.Deleted, deleted)
+	}
+	if len(resp.Updated) != 1 {
+		t.Fatalf("got %v updated objects, want 1", len(resp.Updated))
+	}
+	got := resp.Updated[0]
+	if got.Path != object.Path {
+		t.Errorf("got path %q, want %q", got.Path, object.Path)
+	}
+	if got.ETag != object.ETag {
+		t.Errorf("got etag %q, want %q", got.ETag, object.ETag)
+	}
+	if got.Data == nil {
+		t.Fatalf("calendar-data missing from the response")
+	}
+	summary, err := got.Data.Children[0].Props.Text(ical.PropSummary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary != "This is an event" {
+		t.Errorf("got summary %q", summary)
+	}
+}
+
+// TestSyncCollectionResponseShape checks the wire format, which the client is
+// lenient about.
+func TestSyncCollectionResponseShape(t *testing.T) {
+	calendar := Calendar{Path: "/user/calendars/cal"}
+	object := newSyncTestObject(calendar.Path+"/new.ics", "This is an event")
+	deleted := calendar.Path + "/gone.ics"
+
+	b := &syncTestBackend{
+		testBackend: testBackend{calendars: []Calendar{calendar}},
+		sync: &SyncResponse{
+			SyncToken: "43",
+			Updated:   []CalendarObject{object},
+			Deleted:   []string{deleted},
+		},
+	}
+
+	body := fmt.Sprintf(reportSyncCollection, "42", "1")
+	res, data := serveRaw(t, b, "REPORT", calendar.Path, body)
+	if res.StatusCode != http.StatusMultiStatus {
+		t.Fatalf("got status %v, want 207:\n%s", res.StatusCode, data)
+	}
+	if !strings.Contains(string(data), `<sync-token>43</sync-token>`) {
+		t.Errorf("missing top-level sync-token in response:\n%s", data)
+	}
+
+	var ms internal.MultiStatus
+	if err := xml.Unmarshal(data, &ms); err != nil {
+		t.Fatal(err)
+	}
+	if ms.SyncToken != "43" {
+		t.Errorf("got sync-token %q, want 43", ms.SyncToken)
+	}
+	if len(ms.Responses) != 2 {
+		t.Fatalf("got %v responses, want 2", len(ms.Responses))
+	}
+
+	updated := ms.Responses[0]
+	if len(updated.PropStats) == 0 {
+		t.Errorf("updated member has no propstat")
+	}
+	if _, code := findProp(t, &updated, internal.GetETagName); code != http.StatusOK {
+		t.Errorf("updated member: getetag has status %v, want 200", code)
+	}
+
+	removed := ms.Responses[1]
+	if len(removed.Hrefs) != 1 || removed.Hrefs[0].Path != deleted {
+		t.Errorf("got removed hrefs %v, want [%v]", removed.Hrefs, deleted)
+	}
+	if removed.Status == nil || removed.Status.Code != http.StatusNotFound {
+		t.Errorf("got removed status %v, want 404", removed.Status)
+	}
+	if len(removed.PropStats) != 0 {
+		t.Errorf("removed member must not carry a propstat, got %v", removed.PropStats)
+	}
+}
+
+func TestSyncCollectionErrors(t *testing.T) {
+	calendar := Calendar{Path: "/user/calendars/cal"}
+	plain := testBackend{calendars: []Calendar{calendar}}
+
+	for _, tc := range []struct {
+		name     string
+		backend  Backend
+		level    string
+		wantCode int
+		wantBody string
+	}{
+		{
+			name:     "no sync backend",
+			backend:  plain,
+			level:    "1",
+			wantCode: http.StatusForbidden,
+			wantBody: "supported-report",
+		},
+		{
+			name: "invalid sync token",
+			backend: &syncTestBackend{
+				testBackend: plain,
+				syncErr:     fmt.Errorf("caldav: token too old: %w", ErrInvalidSyncToken),
+			},
+			level:    "1",
+			wantCode: http.StatusForbidden,
+			wantBody: "valid-sync-token",
+		},
+		{
+			name:     "unsupported sync level",
+			backend:  &syncTestBackend{testBackend: plain, sync: &SyncResponse{}},
+			level:    "2",
+			wantCode: http.StatusBadRequest,
+			wantBody: `"2"`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := fmt.Sprintf(reportSyncCollection, "42", tc.level)
+			res, data := serveRaw(t, tc.backend, "REPORT", calendar.Path, body)
+			if res.StatusCode != tc.wantCode {
+				t.Errorf("got status %v, want %v:\n%s", res.StatusCode, tc.wantCode, data)
+			}
+			if !strings.Contains(string(data), tc.wantBody) {
+				t.Errorf("response doesn't mention %v:\n%s", tc.wantBody, data)
+			}
+		})
+	}
+}
+
+func TestSyncCollectionAccepted(t *testing.T) {
+	calendar := Calendar{Path: "/user/calendars/cal"}
+
+	for _, level := range []string{"1", "infinite", "infinity", ""} {
+		t.Run("sync-level "+level, func(t *testing.T) {
+			b := &syncTestBackend{
+				testBackend: testBackend{calendars: []Calendar{calendar}},
+				sync:        &SyncResponse{SyncToken: "42"},
+			}
+			body := fmt.Sprintf(reportSyncCollection, "42", level)
+			res, data := serveRaw(t, b, "REPORT", calendar.Path, body)
+			if res.StatusCode != http.StatusMultiStatus {
+				t.Fatalf("got status %v, want 207:\n%s", res.StatusCode, data)
+			}
+			if !reflect.DeepEqual(b.syncCalls, []string{"42"}) {
+				t.Errorf("backend got sync tokens %v, want [42]", b.syncCalls)
+			}
+		})
+	}
+
+	// An initial synchronization has an empty token, a limit is ignored and
+	// any Depth is accepted.
+	for _, depth := range []string{"", "0", "1"} {
+		t.Run("depth "+depth, func(t *testing.T) {
+			object := newSyncTestObject(calendar.Path+"/new.ics", "This is an event")
+			b := &syncTestBackend{
+				testBackend: testBackend{calendars: []Calendar{calendar}},
+				sync: &SyncResponse{
+					SyncToken: "42",
+					Updated:   []CalendarObject{object},
+				},
+			}
+
+			req := httptest.NewRequest("REPORT", calendar.Path, strings.NewReader(strings.Replace(reportSyncCollectionApple, "http://example.com/ns/sync/42", "", 1)))
+			req.Header.Set("Content-Type", "application/xml")
+			if depth != "" {
+				req.Header.Set("Depth", depth)
+			}
+			w := httptest.NewRecorder()
+			handler := Handler{Backend: b}
+			handler.ServeHTTP(w, req)
+
+			res := w.Result()
+			defer res.Body.Close()
+			data, err := io.ReadAll(res.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.StatusCode != http.StatusMultiStatus {
+				t.Fatalf("got status %v, want 207:\n%s", res.StatusCode, data)
+			}
+			if !reflect.DeepEqual(b.syncCalls, []string{""}) {
+				t.Errorf("backend got sync tokens %q, want [\"\"]", b.syncCalls)
+			}
+
+			var ms internal.MultiStatus
+			if err := xml.Unmarshal(data, &ms); err != nil {
+				t.Fatal(err)
+			}
+			if len(ms.Responses) != 1 {
+				t.Fatalf("got %v responses, want 1", len(ms.Responses))
+			}
+			if _, code := findProp(t, &ms.Responses[0], calendarDataName); code != http.StatusOK {
+				t.Errorf("calendar-data has status %v, want 200", code)
+			}
+		})
+	}
 }

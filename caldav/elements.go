@@ -21,6 +21,8 @@ var (
 	syncTokenName          = xml.Name{internal.Namespace, "sync-token"}
 	supportedReportSetName = xml.Name{internal.Namespace, "supported-report-set"}
 	syncCollectionName     = xml.Name{internal.Namespace, "sync-collection"}
+	supportedReportName    = xml.Name{internal.Namespace, "supported-report"}
+	validSyncTokenName     = xml.Name{internal.Namespace, "valid-sync-token"}
 
 	calendarDescriptionName           = xml.Name{namespace, "calendar-description"}
 	supportedCalendarDataName         = xml.Name{namespace, "supported-calendar-data"}
@@ -264,8 +266,9 @@ type calendarDataResp struct {
 }
 
 type reportReq struct {
-	Query    *calendarQuery
-	Multiget *calendarMultiget
+	Query          *calendarQuery
+	Multiget       *calendarMultiget
+	SyncCollection *internal.SyncCollectionQuery
 	// TODO: CALDAV:free-busy-query
 }
 
@@ -278,6 +281,9 @@ func (r *reportReq) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 	case calendarMultigetName:
 		r.Multiget = &calendarMultiget{}
 		v = r.Multiget
+	case syncCollectionName:
+		r.SyncCollection = &internal.SyncCollectionQuery{}
+		v = r.SyncCollection
 	default:
 		return fmt.Errorf("caldav: unsupported REPORT root %q %q", start.Name.Space, start.Name.Local)
 	}
