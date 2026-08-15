@@ -466,6 +466,11 @@ func (b *backend) HeadGet(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	if r.Method != http.MethodHead {
+		// The Backend contract requires Data to be non-nil, but encoding a
+		// nil calendar would panic inside go-ical.
+		if co.Data == nil {
+			return fmt.Errorf("caldav: no calendar data for %q", co.Path)
+		}
 		return ical.NewEncoder(w).Encode(co.Data)
 	}
 	return nil
@@ -736,6 +741,12 @@ func (b *backend) propFindCalendarObject(ctx context.Context, propfind *internal
 		}),
 		// TODO: calendar-data can only be used in REPORT requests
 		calendarDataName: func(*internal.RawXMLValue) (interface{}, error) {
+			// The Backend contract requires Data to be non-nil, but encoding
+			// a nil calendar would panic inside go-ical.
+			if co.Data == nil {
+				return nil, fmt.Errorf("caldav: no calendar data for %q", co.Path)
+			}
+
 			var buf bytes.Buffer
 			if err := ical.NewEncoder(&buf).Encode(co.Data); err != nil {
 				return nil, err

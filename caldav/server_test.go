@@ -707,6 +707,39 @@ func TestSyncCollectionErrors(t *testing.T) {
 	}
 }
 
+// TestSyncCollectionNilData asks for calendar-data on an updated member whose
+// backend left Data nil: the member's propstat must fail, not the process.
+func TestSyncCollectionNilData(t *testing.T) {
+	calendar := Calendar{Path: "/user/calendars/cal"}
+	b := &syncTestBackend{
+		testBackend: testBackend{calendars: []Calendar{calendar}},
+		sync: &SyncResponse{
+			SyncToken: "43",
+			Updated:   []CalendarObject{{Path: calendar.Path + "/new.ics", ETag: "etag-1"}},
+		},
+	}
+
+	res, data := serveRaw(t, b, "REPORT", calendar.Path, reportSyncCollectionApple)
+	if res.StatusCode != http.StatusMultiStatus {
+		t.Fatalf("got status %v, want 207:\n%s", res.StatusCode, data)
+	}
+
+	var ms internal.MultiStatus
+	if err := xml.Unmarshal(data, &ms); err != nil {
+		t.Fatal(err)
+	}
+	if len(ms.Responses) != 1 {
+		t.Fatalf("got %v responses, want 1", len(ms.Responses))
+	}
+	resp := &ms.Responses[0]
+	if _, code := findProp(t, resp, internal.GetETagName); code != http.StatusOK {
+		t.Errorf("getetag has status %v, want 200", code)
+	}
+	if _, code := findProp(t, resp, calendarDataName); code != http.StatusInternalServerError {
+		t.Errorf("calendar-data has status %v, want 500", code)
+	}
+}
+
 func TestSyncCollectionAccepted(t *testing.T) {
 	calendar := Calendar{Path: "/user/calendars/cal"}
 
