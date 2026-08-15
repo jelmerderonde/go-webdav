@@ -308,6 +308,21 @@ func (h *Handler) handleMultiget(ctx context.Context, w http.ResponseWriter, mul
 	return internal.ServeMultiStatus(w, ms)
 }
 
+// syncCollectionError hides a SyncBackend failure from the client:
+// internal.ServeError writes err.Error() into the response body, so the
+// message stays generic while the cause remains available through Unwrap.
+type syncCollectionError struct {
+	cause error
+}
+
+func (err *syncCollectionError) Error() string {
+	return "caldav: sync-collection failed"
+}
+
+func (err *syncCollectionError) Unwrap() error {
+	return err.cause
+}
+
 // https://tools.ietf.org/html/rfc6578#section-3
 func (h *Handler) handleSyncCollection(r *http.Request, w http.ResponseWriter, query *internal.SyncCollectionQuery) error {
 	sb, ok := h.Backend.(SyncBackend)
@@ -341,7 +356,7 @@ func (h *Handler) handleSyncCollection(r *http.Request, w http.ResponseWriter, q
 				},
 			}
 		}
-		return err
+		return &syncCollectionError{err}
 	}
 
 	// DAV:prop is mandatory in a sync-collection request, fall back to the

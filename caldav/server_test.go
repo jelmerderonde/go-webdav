@@ -648,11 +648,12 @@ func TestSyncCollectionErrors(t *testing.T) {
 	plain := testBackend{calendars: []Calendar{calendar}}
 
 	for _, tc := range []struct {
-		name     string
-		backend  Backend
-		level    string
-		wantCode int
-		wantBody string
+		name        string
+		backend     Backend
+		level       string
+		wantCode    int
+		wantBody    string
+		wantNotBody string
 	}{
 		{
 			name:     "no sync backend",
@@ -678,6 +679,17 @@ func TestSyncCollectionErrors(t *testing.T) {
 			wantCode: http.StatusBadRequest,
 			wantBody: `"2"`,
 		},
+		{
+			name: "backend error stays server-side",
+			backend: &syncTestBackend{
+				testBackend: plain,
+				syncErr:     fmt.Errorf("pq: connection to 10.0.0.7:5432 refused"),
+			},
+			level:       "1",
+			wantCode:    http.StatusInternalServerError,
+			wantBody:    "sync-collection failed",
+			wantNotBody: "10.0.0.7",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := fmt.Sprintf(reportSyncCollection, "42", tc.level)
@@ -687,6 +699,9 @@ func TestSyncCollectionErrors(t *testing.T) {
 			}
 			if !strings.Contains(string(data), tc.wantBody) {
 				t.Errorf("response doesn't mention %v:\n%s", tc.wantBody, data)
+			}
+			if tc.wantNotBody != "" && strings.Contains(string(data), tc.wantNotBody) {
+				t.Errorf("response leaks %v:\n%s", tc.wantNotBody, data)
 			}
 		})
 	}
