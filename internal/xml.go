@@ -31,8 +31,21 @@ func EncodeRawXMLElement(v interface{}) (*RawXMLValue, error) {
 	return &RawXMLValue{out: v}, nil
 }
 
+// maxXMLDepth bounds the recursion in UnmarshalXML: encoding/xml's own depth
+// limit doesn't count these frames, so a deeply nested document could
+// otherwise exhaust the stack. Real WebDAV bodies nest a handful of levels.
+const maxXMLDepth = 128
+
 // UnmarshalXML implements xml.Unmarshaler.
 func (val *RawXMLValue) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+	return val.unmarshalXML(d, start, 0)
+}
+
+func (val *RawXMLValue) unmarshalXML(d *xml.Decoder, start xml.StartElement, depth int) error {
+	if depth >= maxXMLDepth {
+		return fmt.Errorf("webdav: maximum XML depth exceeded")
+	}
+
 	val.tok = start
 	val.children = nil
 	val.out = nil
@@ -45,7 +58,7 @@ func (val *RawXMLValue) UnmarshalXML(d *xml.Decoder, start xml.StartElement) err
 		switch tok := tok.(type) {
 		case xml.StartElement:
 			child := RawXMLValue{}
-			if err := child.UnmarshalXML(d, tok); err != nil {
+			if err := child.unmarshalXML(d, tok, depth+1); err != nil {
 				return err
 			}
 			val.children = append(val.children, child)

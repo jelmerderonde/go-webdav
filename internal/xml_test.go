@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/xml"
 	"io"
+	"strings"
 	"testing"
 )
 
@@ -38,6 +39,20 @@ func TestRawXMLValue(t *testing.T) {
 	s := xml.Header + string(b)
 	if s != rawXML {
 		t.Errorf("input doesn't match output:\n%v\nvs.\n%v", rawXML, s)
+	}
+}
+
+func TestRawXMLValue_DepthLimit(t *testing.T) {
+	nested := func(depth int) string {
+		return strings.Repeat("<a>", depth) + strings.Repeat("</a>", depth)
+	}
+
+	var rawValue RawXMLValue
+	if err := xml.Unmarshal([]byte(nested(maxXMLDepth)), &rawValue); err != nil {
+		t.Errorf("xml.Unmarshal() = %v for a document within the depth limit", err)
+	}
+	if err := xml.Unmarshal([]byte(nested(maxXMLDepth+1)), &rawValue); err == nil {
+		t.Errorf("xml.Unmarshal() accepted a document nested %v levels deep", maxXMLDepth+1)
 	}
 }
 
