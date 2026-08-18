@@ -93,6 +93,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "REPORT":
 		err = h.handleReport(w, r)
+	case http.MethodPost:
+		err = h.handlePost(w, r)
 	default:
 		b := backend{
 			Backend: h.Backend,
@@ -104,6 +106,47 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		internal.ServeError(w, err)
+	}
+}
+
+// handlePost refuses a scheduling POST to the synthetic inbox or outbox: the
+// server advertises auto-schedule only, where it owns iTIP delivery and the
+// client submits scheduling changes as a PUT of the calendar object. Any other
+// POST keeps the generic (405) handling.
+func (h *Handler) handlePost(w http.ResponseWriter, r *http.Request) error {
+	b := backend{
+		Backend: h.Backend,
+		Prefix:  strings.TrimSuffix(h.Prefix, "/"),
+	}
+
+	sched, err := b.schedulingPaths(r.Context())
+	if err != nil {
+		return err
+	}
+	if sched != nil {
+		switch path.Clean(r.URL.Path) {
+		case path.Clean(sched.inbox), path.Clean(sched.outbox):
+			return newSchedulingPostError()
+		}
+	}
+
+	hh := internal.Handler{Backend: &b}
+	hh.ServeHTTP(w, r)
+	return nil
+}
+
+// newSchedulingPostError is a 501 naming the unimplemented feature, in a
+// DAV:error so a client sees more than a bare status.
+func newSchedulingPostError() error {
+	desc, err := internal.EncodeRawXMLElement(&responseDescription{
+		Text: "caldav: scheduling POST is not implemented: this server advertises calendar-auto-schedule, submit scheduling changes as a PUT of the calendar object",
+	})
+	if err != nil {
+		return err
+	}
+	return &internal.HTTPError{
+		Code: http.StatusNotImplemented,
+		Err:  &internal.Error{Raw: []internal.RawXMLValue{*desc}},
 	}
 }
 
@@ -420,8 +463,61 @@ func (b *backend) resourceTypeAtPath(reqPath string) resourceType {
 	return resourceType(len(strings.Split(p, "/")) - 1)
 }
 
+// scheduling holds the synthetic scheduling collection paths of a request,
+// derived from the calendar home set.
+type scheduling struct {
+	backend       SchedulingBackend
+	inbox, outbox string
+}
+
+// schedulingPaths returns nil when the Backend doesn't implement
+// SchedulingBackend, which is what keeps the whole surface invisible then.
+func (b *backend) schedulingPaths(ctx context.Context) (*scheduling, error) {
+	sb, ok := b.Backend.(SchedulingBackend)
+	if !ok {
+		return nil, nil
+	}
+	homeSetPath, err := b.Backend.CalendarHomeSetPath(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !strings.HasSuffix(homeSetPath, "/") {
+		homeSetPath += "/"
+	}
+	return &scheduling{
+		backend: sb,
+		inbox:   homeSetPath + "inbox/",
+		outbox:  homeSetPath + "outbox/",
+	}, nil
+}
+
+// match reports which scheduling collection reqPath addresses, if any.
+func (s *scheduling) match(reqPath string) (name xml.Name, collPath string, ok bool) {
+	switch path.Clean(reqPath) {
+	case path.Clean(s.inbox):
+		return scheduleInboxName, s.inbox, true
+	case path.Clean(s.outbox):
+		return scheduleOutboxName, s.outbox, true
+	}
+	return xml.Name{}, "", false
+}
+
 func (b *backend) Options(r *http.Request) (caps []string, allow []string, err error) {
 	caps = []string{"calendar-access"}
+
+	sched, err := b.schedulingPaths(r.Context())
+	if err != nil {
+		return nil, nil, err
+	}
+	if sched != nil {
+		// Auto-schedule only: the legacy calendar-schedule token invites
+		// outbox POSTs, which this server doesn't implement.
+		caps = append(caps, "calendar-auto-schedule")
+
+		if _, _, ok := sched.match(r.URL.Path); ok {
+			return caps, []string{http.MethodOptions, "PROPFIND"}, nil
+		}
+	}
 
 	if b.resourceTypeAtPath(r.URL.Path) != resourceTypeCalendarObject {
 		return caps, []string{http.MethodOptions, "PROPFIND", "REPORT", "DELETE", "MKCOL"}, nil
@@ -483,6 +579,23 @@ func (b *backend) PropFind(r *http.Request, propfind *internal.PropFind, depth i
 	var dataReq CalendarCompRequest
 	var resps []internal.Response
 
+	sched, err := b.schedulingPaths(r.Context())
+	if err != nil {
+		return nil, err
+	}
+	// The scheduling collections are served here, without ever reaching the
+	// Backend: they exist only as a discovery surface. They have no members,
+	// so every depth answers with the collection alone.
+	if sched != nil {
+		if name, collPath, ok := sched.match(r.URL.Path); ok {
+			resp, err := b.propFindScheduleCollection(r.Context(), propfind, sched, name, collPath)
+			if err != nil {
+				return nil, err
+			}
+			return internal.NewMultiStatus(*resp), nil
+		}
+	}
+
 	switch resType {
 	case resourceTypeRoot:
 		resp, err := b.propFindRoot(r.Context(), propfind)
@@ -534,6 +647,16 @@ func (b *backend) PropFind(r *http.Request, propfind *internal.PropFind, depth i
 					return nil, err
 				}
 				resps = append(resps, resps_...)
+
+				// The scheduling collections are members of the home set:
+				// listing them here is where clients find them.
+				if sched != nil {
+					resps_, err := b.propFindScheduleCollections(r.Context(), propfind, sched)
+					if err != nil {
+						return nil, err
+					}
+					resps = append(resps, resps_...)
+				}
 			}
 		}
 	case resourceTypeCalendar:
@@ -624,7 +747,75 @@ func (b *backend) propFindUserPrincipal(ctx context.Context, propfind *internal.
 		}
 	}
 
+	sched, err := b.schedulingPaths(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if sched != nil {
+		props[scheduleInboxURLName] = internal.PropFindValue(&scheduleInboxURL{
+			Href: internal.Href{Path: sched.inbox},
+		})
+		props[scheduleOutboxURLName] = internal.PropFindValue(&scheduleOutboxURL{
+			Href: internal.Href{Path: sched.outbox},
+		})
+	}
+
 	return internal.NewPropFindResponse(principalPath, propfind, props)
+}
+
+// scheduleInboxCTag is constant because the inbox never has any members: this
+// server delivers nothing into it.
+const scheduleInboxCTag = "empty"
+
+func (b *backend) propFindScheduleCollection(ctx context.Context, propfind *internal.PropFind, sched *scheduling, name xml.Name, collPath string) (*internal.Response, error) {
+	displayName := "Outbox"
+	if name == scheduleInboxName {
+		displayName = "Inbox"
+	}
+
+	props := map[xml.Name]internal.PropFindFunc{
+		internal.CurrentUserPrincipalName: func(*internal.RawXMLValue) (interface{}, error) {
+			path, err := b.Backend.CurrentUserPrincipal(ctx)
+			if err != nil {
+				return nil, err
+			}
+			return &internal.CurrentUserPrincipal{Href: internal.Href{Path: path}}, nil
+		},
+		internal.ResourceTypeName: internal.PropFindValue(internal.NewResourceType(internal.CollectionName, name)),
+		internal.DisplayNameName:  internal.PropFindValue(&internal.DisplayName{Name: displayName}),
+	}
+
+	if name == scheduleInboxName {
+		props[scheduleDefaultCalendarURLName] = func(*internal.RawXMLValue) (interface{}, error) {
+			calPath, err := sched.backend.ScheduleDefaultCalendarPath(ctx)
+			if err != nil {
+				return nil, err
+			}
+			return &scheduleDefaultCalendarURL{Href: internal.Href{Path: calPath}}, nil
+		}
+		props[scheduleCalendarTranspName] = internal.PropFindValue(newOpaqueTransp())
+		props[getCTagName] = internal.PropFindValue(&getCTag{CTag: scheduleInboxCTag})
+	}
+
+	return internal.NewPropFindResponse(collPath, propfind, props)
+}
+
+func (b *backend) propFindScheduleCollections(ctx context.Context, propfind *internal.PropFind, sched *scheduling) ([]internal.Response, error) {
+	var resps []internal.Response
+	for _, coll := range []struct {
+		name xml.Name
+		path string
+	}{
+		{scheduleInboxName, sched.inbox},
+		{scheduleOutboxName, sched.outbox},
+	} {
+		resp, err := b.propFindScheduleCollection(ctx, propfind, sched, coll.name, coll.path)
+		if err != nil {
+			return nil, err
+		}
+		resps = append(resps, *resp)
+	}
+	return resps, nil
 }
 
 func (b *backend) propFindHomeSet(ctx context.Context, propfind *internal.PropFind) (*internal.Response, error) {
@@ -679,6 +870,17 @@ func (b *backend) propFindCalendar(ctx context.Context, propfind *internal.PropF
 			}, nil
 		},
 		internal.CurrentUserPrivilegeSetName: internal.PropFindValue(internal.NewCurrentUserPrivilegeSet(cal.ReadOnly)),
+	}
+
+	sched, err := b.schedulingPaths(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if sched != nil {
+		// Clients ask this on every calendar as soon as scheduling is
+		// advertised; the server computes no free/busy, so it is always
+		// opaque.
+		props[scheduleCalendarTranspName] = internal.PropFindValue(newOpaqueTransp())
 	}
 
 	reports := []xml.Name{calendarQueryName, calendarMultigetName}

@@ -200,3 +200,29 @@ type CalendarUserAddressBackend interface {
 	// preferred address. An empty result is reported as an empty property.
 	CalendarUserAddresses(ctx context.Context) ([]string, error)
 }
+
+// SchedulingBackend is an optional interface a Backend can implement to enable
+// the CalDAV scheduling discovery surface defined in RFC 6638: the
+// calendar-auto-schedule capability, the CALDAV:schedule-inbox-URL and
+// CALDAV:schedule-outbox-URL properties on the principal, the two scheduling
+// collections themselves, and CALDAV:schedule-calendar-transp on calendars.
+//
+// The scheduling collections are SYNTHETIC: the server derives their paths
+// from the calendar home set ("inbox/" and "outbox/" below it), answers
+// PROPFIND on them itself, and never asks the Backend about them. The inbox is
+// always empty — nothing is ever delivered into it.
+//
+// Only auto-schedule is advertised, never the legacy calendar-schedule: in
+// auto mode the server owns iTIP delivery and the client submits scheduling
+// changes as an ordinary PUT of the calendar object. A scheduling POST to
+// either collection is refused with 501.
+//
+// Backends which don't implement it are unaffected: none of the above is
+// advertised, and the two paths stay ordinary (missing) resources.
+type SchedulingBackend interface {
+	// ScheduleDefaultCalendarPath returns the path of the calendar collection
+	// where incoming invitations are stored, exposed as the
+	// CALDAV:schedule-default-calendar-URL property on the schedule inbox. It
+	// must be the path of a calendar the Backend also lists.
+	ScheduleDefaultCalendarPath(ctx context.Context) (string, error)
+}

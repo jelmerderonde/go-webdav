@@ -18,6 +18,13 @@ var (
 	calendarHomeSetName        = xml.Name{namespace, "calendar-home-set"}
 	calendarUserAddressSetName = xml.Name{namespace, "calendar-user-address-set"}
 
+	scheduleInboxURLName           = xml.Name{namespace, "schedule-inbox-URL"}
+	scheduleOutboxURLName          = xml.Name{namespace, "schedule-outbox-URL"}
+	scheduleDefaultCalendarURLName = xml.Name{namespace, "schedule-default-calendar-URL"}
+	scheduleCalendarTranspName     = xml.Name{namespace, "schedule-calendar-transp"}
+	scheduleInboxName              = xml.Name{namespace, "schedule-inbox"}
+	scheduleOutboxName             = xml.Name{namespace, "schedule-outbox"}
+
 	getCTagName            = xml.Name{calendarServerNamespace, "getctag"}
 	syncTokenName          = xml.Name{internal.Namespace, "sync-token"}
 	supportedReportSetName = xml.Name{internal.Namespace, "supported-report-set"}
@@ -55,6 +62,53 @@ type calendarUserAddressSet struct {
 
 func (a *calendarUserAddressSet) GetXMLName() xml.Name {
 	return calendarUserAddressSetName
+}
+
+// https://tools.ietf.org/html/rfc6638#section-2.2
+type scheduleInboxURL struct {
+	XMLName xml.Name      `xml:"urn:ietf:params:xml:ns:caldav schedule-inbox-URL"`
+	Href    internal.Href `xml:"DAV: href"`
+}
+
+func (a *scheduleInboxURL) GetXMLName() xml.Name {
+	return scheduleInboxURLName
+}
+
+// https://tools.ietf.org/html/rfc6638#section-2.1
+type scheduleOutboxURL struct {
+	XMLName xml.Name      `xml:"urn:ietf:params:xml:ns:caldav schedule-outbox-URL"`
+	Href    internal.Href `xml:"DAV: href"`
+}
+
+func (a *scheduleOutboxURL) GetXMLName() xml.Name {
+	return scheduleOutboxURLName
+}
+
+// https://tools.ietf.org/html/rfc6638#section-9.2
+type scheduleDefaultCalendarURL struct {
+	XMLName xml.Name      `xml:"urn:ietf:params:xml:ns:caldav schedule-default-calendar-URL"`
+	Href    internal.Href `xml:"DAV: href"`
+}
+
+func (a *scheduleDefaultCalendarURL) GetXMLName() xml.Name {
+	return scheduleDefaultCalendarURLName
+}
+
+// https://tools.ietf.org/html/rfc6638#section-9.1
+type scheduleCalendarTransp struct {
+	XMLName     xml.Name  `xml:"urn:ietf:params:xml:ns:caldav schedule-calendar-transp"`
+	Opaque      *struct{} `xml:"urn:ietf:params:xml:ns:caldav opaque,omitempty"`
+	Transparent *struct{} `xml:"urn:ietf:params:xml:ns:caldav transparent,omitempty"`
+}
+
+func (a *scheduleCalendarTransp) GetXMLName() xml.Name {
+	return scheduleCalendarTranspName
+}
+
+// newOpaqueTransp reports the collection's events as busy for free/busy
+// lookups — the only value this server has, since it computes no free/busy.
+func newOpaqueTransp() *scheduleCalendarTransp {
+	return &scheduleCalendarTransp{Opaque: &struct{}{}}
 }
 
 // https://tools.ietf.org/html/rfc4791#section-5.2.1
