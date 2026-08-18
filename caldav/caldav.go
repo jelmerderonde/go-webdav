@@ -182,3 +182,21 @@ type SyncBackend interface {
 	// removed calendar objects.
 	SyncCalendar(ctx context.Context, path, syncToken string) (*SyncResponse, error)
 }
+
+// CalendarUserAddressBackend is an optional interface a Backend can implement
+// to advertise the addresses which identify its user as a calendar user, as
+// defined in RFC 6638 section 2.4.1.
+//
+// Backends which don't implement it are unaffected: the
+// CALDAV:calendar-user-address-set property is then not reported at all.
+type CalendarUserAddressBackend interface {
+	// CalendarUserAddresses returns the URIs identifying the current user,
+	// exposed as the CALDAV:calendar-user-address-set property on the
+	// principal. Each entry is a complete URI including its scheme, e.g.
+	// "mailto:user@example.org", and must parse as a URI: the server reports
+	// each one as a DAV:href child of the property.
+	//
+	// The order is significant: clients treat the first entry as the user's
+	// preferred address. An empty result is reported as an empty property.
+	CalendarUserAddresses(ctx context.Context) ([]string, error)
+}

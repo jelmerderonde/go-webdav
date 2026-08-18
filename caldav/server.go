@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"mime"
 	"net/http"
+	"net/url"
 	"path"
 	"strconv"
 	"strings"
@@ -602,6 +603,27 @@ func (b *backend) propFindUserPrincipal(ctx context.Context, propfind *internal.
 		}),
 		internal.ResourceTypeName: internal.PropFindValue(internal.NewResourceType(internal.CollectionName, internal.PrincipalName)),
 	}
+
+	if ab, ok := b.Backend.(CalendarUserAddressBackend); ok {
+		// The addresses are backend state, so they can't be cached across
+		// requests.
+		props[calendarUserAddressSetName] = func(*internal.RawXMLValue) (interface{}, error) {
+			addrs, err := ab.CalendarUserAddresses(ctx)
+			if err != nil {
+				return nil, err
+			}
+			set := calendarUserAddressSet{}
+			for _, addr := range addrs {
+				u, err := url.Parse(addr)
+				if err != nil {
+					return nil, fmt.Errorf("caldav: invalid calendar user address %q: %v", addr, err)
+				}
+				set.Hrefs = append(set.Hrefs, internal.Href(*u))
+			}
+			return &set, nil
+		}
+	}
+
 	return internal.NewPropFindResponse(principalPath, propfind, props)
 }
 

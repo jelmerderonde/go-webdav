@@ -15,7 +15,8 @@ const namespace = "urn:ietf:params:xml:ns:caldav"
 const calendarServerNamespace = "http://calendarserver.org/ns/"
 
 var (
-	calendarHomeSetName = xml.Name{namespace, "calendar-home-set"}
+	calendarHomeSetName        = xml.Name{namespace, "calendar-home-set"}
+	calendarUserAddressSetName = xml.Name{namespace, "calendar-user-address-set"}
 
 	getCTagName            = xml.Name{calendarServerNamespace, "getctag"}
 	syncTokenName          = xml.Name{internal.Namespace, "sync-token"}
@@ -44,6 +45,16 @@ type calendarHomeSet struct {
 
 func (a *calendarHomeSet) GetXMLName() xml.Name {
 	return calendarHomeSetName
+}
+
+// https://tools.ietf.org/html/rfc6638#section-2.4.1
+type calendarUserAddressSet struct {
+	XMLName xml.Name        `xml:"urn:ietf:params:xml:ns:caldav calendar-user-address-set"`
+	Hrefs   []internal.Href `xml:"DAV: href"`
+}
+
+func (a *calendarUserAddressSet) GetXMLName() xml.Name {
+	return calendarUserAddressSetName
 }
 
 // https://tools.ietf.org/html/rfc4791#section-5.2.1

@@ -377,6 +377,102 @@ func TestPropFindAllPropSyncProps(t *testing.T) {
 	}
 }
 
+var propFindAddressSet = `
+<?xml version="1.0" encoding="UTF-8"?>
+<A:propfind xmlns:A="DAV:" xmlns:B="urn:ietf:params:xml:ns:caldav">
+  <A:prop>
+    <B:calendar-user-address-set/>
+  </A:prop>
+</A:propfind>
+`
+
+func TestPropFindCalendarUserAddressSet(t *testing.T) {
+	plain := testBackend{}
+	addrs := []string{"mailto:me@example.org", "mailto:me+alias@example.org"}
+	withAddrs := addressTestBackend{addresses: addrs}
+
+	for _, tc := range []struct {
+		name    string
+		backend Backend
+		want    []string
+	}{
+		{"plain", plain, nil},
+		{"addresses", withAddrs, addrs},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ms := serveDAV(t, tc.backend, "PROPFIND", "/user/", propFindAddressSet)
+			if len(ms.Responses) != 1 {
+				t.Fatalf("got %v responses, want 1", len(ms.Responses))
+			}
+			resp := &ms.Responses[0]
+
+			raw, code := findProp(t, resp, calendarUserAddressSetName)
+			if raw == nil {
+				t.Fatalf("missing calendar-user-address-set property")
+			}
+			if tc.want == nil {
+				if code != http.StatusNotFound {
+					t.Errorf("calendar-user-address-set: got status %v, want 404", code)
+				}
+				return
+			}
+			if code != http.StatusOK {
+				t.Errorf("calendar-user-address-set: got status %v, want 200", code)
+			}
+			var set calendarUserAddressSet
+			if err := raw.Decode(&set); err != nil {
+				t.Fatal(err)
+			}
+			var got []string
+			for i := range set.Hrefs {
+				got = append(got, set.Hrefs[i].String())
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("calendar-user-address-set: got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPropFindAllPropCalendarUserAddressSet(t *testing.T) {
+	addrs := []string{"mailto:me@example.org"}
+
+	for _, tc := range []struct {
+		name    string
+		backend Backend
+		want    bool
+	}{
+		{"plain", testBackend{}, false},
+		{"addresses", addressTestBackend{addresses: addrs}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ms := serveDAV(t, tc.backend, "PROPFIND", "/user/", propFindAllProp)
+			resp := &ms.Responses[0]
+
+			raw, code := findProp(t, resp, calendarUserAddressSetName)
+			if !tc.want {
+				if raw != nil {
+					t.Errorf("unexpected calendar-user-address-set for a plain backend")
+				}
+				return
+			}
+			if raw == nil {
+				t.Fatalf("missing calendar-user-address-set property")
+			}
+			if code != http.StatusOK {
+				t.Errorf("calendar-user-address-set: got status %v, want 200", code)
+			}
+			var set calendarUserAddressSet
+			if err := raw.Decode(&set); err != nil {
+				t.Fatal(err)
+			}
+			if len(set.Hrefs) != 1 || set.Hrefs[0].String() != addrs[0] {
+				t.Errorf("calendar-user-address-set: got %v, want %v", set.Hrefs, addrs)
+			}
+		})
+	}
+}
+
 type testBackend struct {
 	calendars []Calendar
 	objectMap map[string][]CalendarObject
@@ -432,6 +528,18 @@ func (t testBackend) ListCalendarObjects(ctx context.Context, path string, req *
 
 func (t testBackend) QueryCalendarObjects(ctx context.Context, path string, query *CalendarQuery) ([]CalendarObject, error) {
 	return nil, nil
+}
+
+// addressTestBackend is a testBackend which also implements
+// CalendarUserAddressBackend.
+type addressTestBackend struct {
+	testBackend
+
+	addresses []string
+}
+
+func (b addressTestBackend) CalendarUserAddresses(ctx context.Context) ([]string, error) {
+	return b.addresses, nil
 }
 
 // syncTestBackend is a testBackend which also implements SyncBackend.
